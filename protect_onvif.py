@@ -27,16 +27,18 @@ BACKUPS = Path("/var/lib/protect-onvif-native/stock")
 ARCHIVE_MEMBERS = ("control", "data")
 MANIFEST_KEYS = {"version", "architecture", "stock_sha256", "patched_sha256", "package_sha256"}
 DIGEST = re.compile(r"[a-f0-9]{64}")
-# Exact Linux outputs from the old 7.3.74 port (961997f) and the Axis fix
-# (db5da6b, also published as 7d5c4cb). Keyed by their stock bundle hash.
+# Exact 7.3.74 outputs from the earlier port, Axis fix, and first Native
+# release. Keyed by the corresponding stock bundle hash.
 LEGACY_BUNDLES = {
     "1b54ec68f73bfd0ab6b4d81748b9051a52c70156e2128a59f251bfa3ed461dea": (
         "2ad0ef4ba73560974840c002f642ca4d526153691fe30cf322e6d3571da27065",
         "87049b1477abeda25245430a379318dfa3dc2a64f5d7cdf31cd6ce1d41ff384a",
+        "54eeacff350f286226d591292cd64f32ceab39659bab3b64e5f58b3b36d00654",
     ),
     "5e843ae59c7ad921666364e693a288694ed5deb2077b06bc5508874c7484c9d0": (
         "974dfbf9ac72a95fcf59a3dc0a37944ff63e8a6198c98a766ce6398ffbf92995",
         "31fb8f929fc2a5d4e3d035bc13377c7acaa2175f1123547a5caf4e749acf14f4",
+        "efc98545e2306dabe36769612e9a63950dc08c2dd5fb12ee40167298fcdebe5d",
     ),
 }
 RELEASE_FILES = (

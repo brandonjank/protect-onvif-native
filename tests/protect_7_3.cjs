@@ -19,11 +19,13 @@ function load(id, dependencies) {
 
 const shape = fields => ({
   fields, optional() {return this;}, passthrough() {return this;},
-  regex() {return this;}, and(other) {return shape({...this.fields, ...other.fields});}
+  regex() {return this;}, openapi() {return this;},
+  and(other) {return shape({...this.fields, ...other.fields});}
 });
 const z = {
   object: shape, union: () => shape({}), array: () => shape({}),
-  string: () => shape({}), number: () => shape({}), unknown: () => shape({}), boolean: () => shape({})
+  string: () => shape({}), number: () => shape({}), unknown: () => shape({}), boolean: () => shape({}),
+  any: () => shape({})
 };
 const log = new Proxy({}, {get: () => () => {}});
 const logger = {getLogger: () => log};
@@ -43,6 +45,78 @@ const profiles = [
   {token:"b-lq", source:1, width:640, height:360, audio:false},
   {token:"dual", source:2, width:2560, height:720, audio:true}
 ];
+
+async function verifyMeasuredBitrate() {
+  const camera = (id, bitrate, extra = {}) => ({
+    id, isAdopted: true, isThirdPartyCamera: true,
+    channels: [{id: 0, enabled: true, bitrate}, {id: 2, enabled: true, bitrate: 0}], ...extra
+  });
+  const stored = [
+    camera("lens-a", null), camera("lens-b", 0), camera("configured", 6144000),
+    camera("native", null, {isThirdPartyCamera: false}), camera("empty", null)
+  ];
+  const deviceSchema = new Proxy({}, {get: () => ({apiSchema: {}, modelKey: "fixture"})});
+  const dependencies = Object.fromEntries(
+    [103457, 173638, 368498, 607321, 992134, 1328, 43336, 213084, 209882, 625586,
+     514118, 632346, 718311, 973102, 97266, 932884, 811338, 278394, 171884, 787461, 413766, 779866]
+      .map(id => [id, deviceSchema])
+  );
+  let bootstrap;
+  load(72358, {
+    ...dependencies,
+    911569: z, 366921: {isCamera: () => true}, 231524: {},
+    376995: {publish: async () => undefined},
+    477850: {apiComponentRefByName: () => undefined},
+    511885: {ContentTypes: {JSON: "json"}}, 182424: {MethodNames: {GET: "get"}},
+    478523: {StatusCodes: {OK: 200}},
+    139865: {
+      getAllDevicesForUser: () => ({cameras: structuredClone(stored)}),
+      getAllDevices: () => ({cameras: structuredClone(stored)})
+    },
+    265207: {defaultJsonResponse: () => undefined},
+    815233: class Router { route(route) { bootstrap = route.handlers[0]; } },
+    191183: {getClientDetails: () => ({})}, 4054: {isPeerRequest: request => request.peer}
+  });
+  let queries = 0;
+  const db = {
+    transaction: txn => txn({
+      async query(sql, params) {
+        queries++;
+        if (!params) {
+          assert.match(sql, /statement_timeout/);
+          return {};
+        }
+        assert.match(sql, /SUM\("size"\)::numeric \* 8000/);
+        assert.match(sql, /GROUP BY "cameraId"/);
+        assert.deepEqual(params.replacements.cameraIds, ["lens-a", "lens-b", "empty"]);
+        return {rows: [
+          {cameraId: "lens-a", bps: "2505879"}, {cameraId: "lens-b", bps: "3816903"},
+          {cameraId: "empty", bps: null}, {cameraId: "configured", bps: "1"}
+        ]};
+      }
+    })
+  };
+  const context = {
+    context: {db, nvr: {apiSerialize: () => ({})}},
+    store: {all: () => [], filterByUser: () => []},
+    logger: log
+  };
+  const request = {headers: {}, user: dummyUser};
+  let result;
+  const response = {json: value => {result = value;}};
+  await bootstrap.call(context, request, response);
+  assert.deepEqual(result.cameras.map(item => item.channels[0].bitrate), [2505879, 3816903, 6144000, null, null]);
+  assert.ok(result.cameras.every(item => item.channels[1].bitrate === 0));
+  assert.equal(stored[0].channels[0].bitrate, null);
+  assert.equal(queries, 2);
+  await bootstrap.call(context, {...request, peer: true}, response);
+  assert.equal(result.cameras[0].channels[0].bitrate, null);
+  assert.equal(queries, 2);
+  context.context.db = {transaction: async () => {throw new Error("unavailable");}};
+  await bootstrap.call(context, request, response);
+  assert.equal(result.cameras[1].channels[0].bitrate, 0);
+  console.log("Bootstrap fills missing third-party HQ bitrate from recording files and preserves configured values");
+}
 
 async function run() {
   let soap;
@@ -208,6 +282,7 @@ async function run() {
     end(value) {assert(value.includes("<html"));}
   });
   console.log("Helper and probe routes register with the same camera permission checks as stock adoption");
+  await verifyMeasuredBitrate();
 }
 
 run().catch(error => {console.error(error); process.exitCode=1;});

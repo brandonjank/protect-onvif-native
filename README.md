@@ -18,6 +18,11 @@ periodic sync, and camera IP changes. For an approved build, open the helper fro
 signed-in Protect console at
 `/proxy/protect/api/third-party-cameras/onvif-helper`.
 
+When a third-party camera has a blank HQ bitrate, the adapter fills the field in
+Protect's initial UI response from completed HQ recording segments started within the
+last six hours. It divides total recorded bytes by total recorded duration. Cameras
+without a usable sample keep the blank field. Reload Protect to refresh the value.
+
 Future work includes exposing capabilities that each camera provides, starting with
 stream metadata and playback verification. Motion events, PTZ, and two-way audio
 each need their own device and Protect compatibility tests. Protect's AI Port remains

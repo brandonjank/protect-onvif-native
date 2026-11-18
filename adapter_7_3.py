@@ -9,6 +9,43 @@ SALTED_MAC = r'''(()=>{const z=String(e)+"|"+String(t.macSalt);let q=2166136261;
 
 ADOPT_7_3 = 't.adopt=async(e,t)=>{const{store:r}=e,{username:o,password:d}=t;try{let A,I,R;'
 
+RECORDED_BITRATE = '''
+async function fillMissingRecordingBitrates(db, cameras, logger) {
+  const missing = new Map();
+  for (const camera of cameras) {
+    if (!camera.isThirdPartyCamera || !camera.isAdopted || !camera.id) continue;
+    const high = camera.channels?.find(channel => channel.id === 0 && channel.enabled);
+    if (high && !(high.bitrate > 0)) missing.set(camera.id, high);
+  }
+  if (!missing.size) return;
+  try {
+    const {rows} = await db.transaction(async txn => {
+      await txn.query("SET LOCAL statement_timeout = '1500ms'");
+      return txn.query(`
+        SELECT "cameraId",
+          ROUND(SUM("size")::numeric * 8000 / NULLIF(SUM("end" - "start"), 0)) AS "bps"
+        FROM "recordingFiles"
+        WHERE "cameraId" = ANY(ARRAY[:cameraIds])
+          AND "channel" = 0 AND "type" = 'rotating' AND "active" = false
+          AND "start" >= :windowStart AND "size" > 0
+          AND ("end" - "start") >= 60000
+          AND "size" / NULLIF("end" - "start", 0) < 25000
+        GROUP BY "cameraId"
+      `, {replacements: {
+        cameraIds: [...missing.keys()],
+        windowStart: Date.now() - 6 * 60 * 60 * 1000
+      }});
+    });
+    for (const row of rows) {
+      const bps = Number(row.bps), high = missing.get(row.cameraId);
+      if (high && Number.isFinite(bps) && bps > 0 && bps <= 200_000_000) high.bitrate = bps;
+    }
+  } catch {
+    logger.warn("Could not load measured recording bitrate for the Protect bootstrap");
+  }
+}
+'''
+
 
 def edits():
     changes = []
@@ -183,4 +220,14 @@ def edits():
     '''
     replace("7.3 register helper and probe routes", 't.json(a.apiSerialize())}]}),t.thirdPartyCamerasRouter=T}',
             't.json(a.apiSerialize())}]});' + routes + 't.thirdPartyCamerasRouter=T}')
+
+    # Only fill the missing value on the permission-filtered UI response. The
+    # camera's encoder and the retention calculation retain their original values.
+    bootstrap_route = 'G.route({method:N.MethodNames.GET,path:"/bootstrap"'
+    replace("7.3 define measured recording bitrate", bootstrap_route, RECORDED_BITRATE + bootstrap_route)
+    bootstrap_response = 'for(const e of this.store.all("ringtones"))i.ringtones.push(e.apiSerialize());t.json(i)'
+    replace("7.3 show measured bitrate in camera bootstrap", bootstrap_response,
+            'for(const e of this.store.all("ringtones"))i.ringtones.push(e.apiSerialize());'
+            'if(!(0,B.isPeerRequest)(e))await fillMissingRecordingBitrates(this.context.db,i.cameras,this.logger);'
+            't.json(i)')
     return changes
