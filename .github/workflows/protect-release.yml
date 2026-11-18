@@ -1,0 +1,32 @@
+name: Check for Protect releases
+
+on:
+  schedule:
+    - cron: '41 12 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Test the current stable packages without publishing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protect-releases-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  platform:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [uos-deb11-arm64, uos-deb13-arm64]
+    uses: ./.github/workflows/build-protect-release.yml
+    with:
+      platform: ${{ matrix.platform }}
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    permissions:
+      contents: write

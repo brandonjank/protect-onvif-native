@@ -1,0 +1,87 @@
+name: Build and publish a Protect package
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      dry_run:
+        required: true
+        type: boolean
+
+jobs:
+  discover:
+    name: Check stable feed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      candidate: ${{ steps.feed.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - id: feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ inputs.platform }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          flags=()
+          if [[ "$DRY_RUN" == "true" ]]; then flags+=(--dry-run); fi
+          result=$(python3 tools/protect_release.py plan "$PLATFORM" --repo "$GITHUB_REPOSITORY" "${flags[@]}")
+          printf 'candidate=%s\n' "$result" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and test package
+    needs: discover
+    if: needs.discover.outputs.candidate != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.package.outputs.name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - id: package
+        env:
+          PROTECT_CANDIDATE: ${{ needs.discover.outputs.candidate }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 tools/protect_release.py build "$RUNNER_TEMP/release"
+          printf 'name=protect-%s-%s\n' "$PLATFORM" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish verified release
+    needs: [discover, build]
+    if: ${{ !inputs.dry_run && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/release/
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PROTECT_CANDIDATE: ${{ needs.discover.outputs.candidate }}
+        run: python3 tools/protect_release.py publish "$RUNNER_TEMP/release" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA"

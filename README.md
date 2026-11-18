@@ -129,6 +129,22 @@ The optional systemd watcher and timer stage candidates for review. When Protect
 changes its internals, adapt the patch and test the package before adding its
 manifest to `approved/` and publishing the ZIP.
 
+### GitHub Actions
+
+The **Check for Protect releases** workflow checks Ubiquiti's stable Debian 11
+and Debian 13 ARM64 feeds daily. It downloads new packages from Ubiquiti,
+verifies their advertised SHA-256 and size, and runs the existing build and
+regression tests. Each platform publishes independently after its tests pass.
+
+An automated release includes the patch ZIP, checksums, and release notes.
+Its tag identifies the Protect version, platform, and package hash. A build
+that fails the patch or tests appears as a failed workflow run. If upstream
+changes break the adapter, update the adapter and rerun the workflow.
+
+Use **Run workflow** with `dry_run` enabled to test both current packages and
+preserve build artifacts without publishing. Scheduled runs skip packages
+already released, including the two original 7.3.74 packages.
+
 ## Report a compatibility issue
 
 Include the Protect version, console model, camera model, and the output of
