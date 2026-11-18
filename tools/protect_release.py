@@ -2,7 +2,6 @@
 """Discover, verify, and publish Protect compatibility releases in GitHub Actions."""
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -117,18 +116,16 @@ def plan(platform, repo, dry_run):
 
 
 def download(candidate, target):
-    opener = build_opener(UbiquitiRedirects(DOWNLOAD_HOSTS))
-    digest = hashlib.sha256()
-    size = 0
-    with opener.open(candidate.url, timeout=60) as response, target.open("wb") as file:
-        trusted_url(response.url, DOWNLOAD_HOSTS)
-        for chunk in iter(lambda: response.read(1024 * 1024), b""):
-            size += len(chunk)
-            if size > candidate.size:
-                raise ValueError("The Protect download exceeds the advertised package size")
-            digest.update(chunk)
-            file.write(chunk)
-    if size != candidate.size or digest.hexdigest() != candidate.digest:
+    url = subprocess.check_output(
+        ["curl", "--fail", "--silent", "--show-error", "--location",
+         "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "3",
+         "--connect-timeout", "15", "--max-time", "300", "--retry", "2",
+         "--max-filesize", str(candidate.size), "--output", str(target),
+         "--write-out", "%{url_effective}", candidate.url],
+        encoding="utf-8",
+    )
+    trusted_url(url, DOWNLOAD_HOSTS)
+    if target.stat().st_size != candidate.size or patch.file_digest(target) != candidate.digest:
         raise ValueError("The Protect package does not match the official size and SHA-256")
 
 
