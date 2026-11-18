@@ -1,100 +1,90 @@
 # Protect ONVIF Native
 
-Use third-party ONVIF cameras through Protect's own adoption, live view, and recording
-paths. All camera traffic goes directly to Protect. The starting point is the
-multi-sensor patch we tested with an AXIS P3715-PLVE on Protect 7.3.74.
+Use third-party ONVIF cameras through Protect's own adoption, live view, and
+recording paths. Cameras stream directly to Protect. The patch can expose each
+lens of a multi-sensor camera as a separate Protect device with its own HQ and LQ
+streams and snapshot.
 
 ## Compatibility
 
-| Protect package | Patch and module tests | Console testing |
+| Protect package | Stock SHA-256 prefix | Verification |
 | --- | --- | --- |
-| 7.3.74 ARM64 on Debian 13 | Passed | The original adapter was tested with both Axis lenses recording |
-| 7.3.74 ARM64 on Debian 11 | Passed | Pending |
-| Newer builds | Build and test each package before approval | Pending |
+| 7.3.74 ARM64, Debian 13 | `5e843ae59c7a` | Live on a UDM Pro Max with an AXIS P3715-PLVE |
+| 7.3.74 ARM64, Debian 11 | `1b54ec68f73b` | Offline package, regression, and rollback tests |
 
-The bundled adapter keeps per-lens HQ and LQ profiles, snapshots, and adopted device
-identities. The test suite exercises both ONVIF profile formats, adoption permissions,
-periodic sync, and camera IP changes. For an approved build, open the helper from your
-signed-in Protect console at
-`/proxy/protect/api/third-party-cameras/onvif-helper`.
+These are the approved builds in the first release. Newer Protect packages need a
+separate build and verification. On the live system, both lenses kept their device
+IDs through migration and resumed HQ and LQ recording after a restart. Both showed
+a measured bitrate in Recording Manager.
 
-When a third-party camera has a blank HQ bitrate, the adapter fills the field in
-Protect's initial UI response from completed HQ recording segments started within the
-last six hours. It divides total recorded bytes by total recorded duration. Cameras
-without a usable sample keep the blank field. Reload Protect to refresh the value.
+For a third-party camera with a blank HQ bitrate, Recording Manager uses the
+average from completed HQ segments that started in the last six hours. The patch
+divides total recorded bits by total recorded duration. The field stays blank
+until a usable segment exists. Reload Protect to recalculate the value.
 
-Future work includes exposing capabilities that each camera provides, starting with
-stream metadata and playback verification. Motion events, PTZ, and two-way audio
-each need their own device and Protect compatibility tests. Protect's AI Port remains
-the detection path for cameras paired to it.
+## Install
 
-## Prepare a release
+Install on a compatible UniFi console with root access, Python 3.9 or later,
+`/usr/bin/node24`, and systemd. Plan for a brief interruption to recording while
+Protect restarts.
 
-Run the builder with Python 3.9 or newer and Node 24 against an official Protect
-package downloaded for the target console platform.
+1. Run `sha256sum /usr/share/unifi-protect/app/service.js` on the console. For a
+   stock install, pick the release ZIP whose filename ends in the matching hash
+   prefix. If Protect is already patched, use the matching stock backup's hash
+   and follow the migration section below.
+2. Download the ZIP and `SHA256SUMS` from the same GitHub release. Verify the
+   download with `sha256sum --check --ignore-missing SHA256SUMS`.
+3. On a fresh installation, extract the ZIP as root. Substitute the ZIP filename
+   for `RELEASE.zip`.
 
-```sh
-python3 protect_onvif.py build ./unifi-protect_7.3.74_arm64.deb --staging ./staged
-```
+   ```sh
+   sudo install -d -o root -g root -m 0755 /opt/protect-onvif-native
+   sudo python3 -m zipfile -e RELEASE.zip /opt/protect-onvif-native
+   sudo python3 /opt/protect-onvif-native/protect_onvif.py status
+   ```
 
-The builder reads the service bundle and package metadata, applies the adapter on a
-temporary copy, checks JavaScript syntax, and runs the ONVIF regression suite. The
-output is a release ZIP containing the project source and a manifest keyed by
-version, architecture, and the exact stock and patched bundle hashes. The manifest
-lets the console build a patch locally from its own copy of Protect.
+4. If status shows `approved stock`, install the startup hook and restart Protect.
+   For `legacy patch`, run the migration first. If status reports no approved
+   match, check the package version and stock checksum before continuing.
 
-On a Debian system with the console's trusted APT sources, run the following to look
-up the latest available candidate using the local APT package lists. Use a staging
-directory per platform or APT source.
+   ```sh
+   sudo install -D -m 0644 /opt/protect-onvif-native/systemd/50-protect-onvif.conf \
+     /etc/systemd/system/unifi-protect.service.d/50-protect-onvif.conf
+   sudo systemctl daemon-reload
+   sudo systemctl restart unifi-protect.service
+   sudo python3 /opt/protect-onvif-native/protect_onvif.py status
+   ```
 
-```sh
-python3 protect_onvif.py watch --node /usr/bin/node24 --staging ./staged
-```
+5. Once status shows `patched`, open the helper in your signed-in Protect
+   session at `/proxy/protect/api/third-party-cameras/onvif-helper`. Check each
+   lens in live view and play back footage recorded after the restart.
 
-The included systemd watcher and timer can run on the console. They stage a manifest
-and release ZIP when the build and tests pass. Keep the APT package lists current through the
-console's regular package update mechanism. When Protect changes its internals, adapt
-the patch and run the suite for that version before moving the manifest into
-`approved/`. Public release publication is a separate step.
+## Protect updates and rollback
 
-## Apply on console startup
+On startup the hook verifies the version and bundle hash, saves the original,
+checks JavaScript syntax and applies a matching release. An unrecognized stock
+build starts normally with Protect's own camera behavior. For continued access
+to the patched features, install an approved release for the new build before
+updating Protect. Console OS updates that reset `/opt` or systemd configuration
+may require reinstalling the project and hook.
 
-Place the project at `/opt/protect-onvif-native` under root ownership. The startup
-hook runs as root to update the package-owned bundle. Check the installed bundle first.
-
-```sh
-sudo python3 /opt/protect-onvif-native/protect_onvif.py status
-```
-
-The installer recognizes approved stock, this project's patch, and known outputs
-from the earlier 7.3.74 community patch. See [Migrate the community patch](#migrate-the-community-patch)
-if status shows `legacy patch`.
-
-Install the drop-in and reload systemd during a maintenance window.
+To restore the stock bundle, remove the project's startup hook, reload systemd,
+then restore and restart Protect.
 
 ```sh
-sudo install -D -m 0644 /opt/protect-onvif-native/systemd/50-protect-onvif.conf \
-  /etc/systemd/system/unifi-protect.service.d/50-protect-onvif.conf
+sudo rm /etc/systemd/system/unifi-protect.service.d/50-protect-onvif.conf
 sudo systemctl daemon-reload
+sudo python3 /opt/protect-onvif-native/protect_onvif.py restore
+sudo systemctl restart unifi-protect.service
 ```
 
-On the next start of Protect, the hook checks the installed package and bundle.
-For an approved stock build, it backs up the original by hash, checks the replacement
-and swaps it in atomically. Subsequent starts recognize the patched hash. A build
-without an approved manifest starts with its stock bundle. Separate lens playback
-and recording behavior on a new stock build should be checked after upgrades.
-
-To revert, remove the drop-in, reload the systemd configuration, and run
-`sudo python3 /opt/protect-onvif-native/protect_onvif.py restore`. The restore command
-checks the backup hash before restoring the stock bundle. Restart Protect during
-the maintenance window to load it. Console upgrades that reset `/opt` or systemd
-configuration may require reinstalling the project and drop-in.
-
-## Migrate the community patch
+## Migrate an earlier patch
 
 Pause any existing job that runs the old `apply.sh` so this project can take over
-future starts. During a maintenance window, run the migration using the original
-stock backup from the old installer or the official package for this console.
+future starts. If upgrading an earlier Native release, save a copy of its
+`/opt/protect-onvif-native` directory before extracting the new ZIP. During a
+maintenance window, use the matching stock backup from the old installer, a stock
+backup in `/var/lib/protect-onvif-native/stock`, or the matching official package.
 
 ```sh
 sudo python3 /opt/protect-onvif-native/protect_onvif.py migrate --stock /path/to/service.js.bak-onvifmod
@@ -104,19 +94,52 @@ sudo python3 /opt/protect-onvif-native/protect_onvif.py migrate --package /path/
 
 The command checks the installed legacy hash, verifies the matching stock source,
 builds and syntax-checks a fresh `service.js`, saves both bundles by hash, and
-replaces the installed bundle atomically. Protect's database, camera IDs, and
-recording files stay in place. Restart Protect to load the replacement, then check
-both lenses in live view and play back footage recorded after the restart.
+replaces the installed bundle atomically. Return to the startup hook and restart
+steps under [Install](#install).
 
-To return to the previous install, use `restore --legacy-sha256` with the hash
-printed during migration and restart Protect. The older helper files are still
-available to that bundle. An unrecognized custom build needs a verified stock
-baseline before using `apply`. Protect versions older than 7.3.74 need a Protect
-upgrade before installing this project.
+To roll back to the previous bundle, run `restore --legacy-sha256` with the hash
+printed during migration, restore the previous startup setup, and restart
+Protect. For an unrecognized custom patch, start from a verified stock bundle.
+Upgrade Protect versions older than 7.3.74 before installing this project.
+
+## Build a release
+
+Run the builder with Python 3.9 or newer and Node 24 against an official Protect
+package for the target console.
+
+```sh
+python3 protect_onvif.py build ./unifi-protect_7.3.74_arm64.deb --staging ./staged
+```
+
+The builder patches a temporary copy, checks JavaScript syntax, and runs the
+ONVIF regression suite. The ZIP contains the project source and an approved-build
+manifest so the recorder can generate the replacement from its stock Protect
+bundle.
+
+On a Debian system with a trusted Protect APT source, the watcher can check the
+available candidate and build a release ZIP. Use one staging directory per
+platform or package source. The watcher reads the local APT lists, so its results
+depend on when those lists were refreshed.
+
+```sh
+python3 protect_onvif.py watch --node /usr/bin/node24 --staging ./staged
+```
+
+The optional systemd watcher and timer stage candidates for review. When Protect
+changes its internals, adapt the patch and test the package before adding its
+manifest to `approved/` and publishing the ZIP.
+
+## Report a compatibility issue
+
+Include the Protect version, console model, camera model, and the output of
+`protect_onvif.py status`. Redact credentials, addresses, and stream URLs from
+any logs you share.
 
 ## License and attribution
 
 GPL-3.0. The 7.3 adapter and helper UI are derived from
 [CALTechNet/unifi-protect-multicamera-onvif](https://github.com/CALTechNet/unifi-protect-multicamera-onvif)
-and Brandon Jank's 7.3.74 and Axis compatibility changes at commits `961997f` and
-`db5da6b`. This project is independent of Ubiquiti.
+and Brandon Jank's November 18, 2026 changes for Protect 7.3.74 and AXIS multi-sensor
+support. Protect ONVIF Native adds a version-checked installer, upgrade hook,
+legacy migration, and measured bitrate display. This project is independent of
+Ubiquiti.

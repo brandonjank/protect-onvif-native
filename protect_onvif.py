@@ -180,9 +180,13 @@ def build(package, staging, node, *, expected_version=None):
     metadata = (json.dumps(manifest, indent=2) + "\n").encode()
     release = io.BytesIO()
     with zipfile.ZipFile(release, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file in RELEASE_FILES:
-            archive.write(PROJECT / file, file)
-        archive.writestr(f"approved/{name}.json", metadata)
+        entries = {file: (PROJECT / file).read_bytes() for file in RELEASE_FILES}
+        entries[f"approved/{name}.json"] = metadata
+        for file, content in sorted(entries.items()):
+            member = zipfile.ZipInfo(file)
+            member.create_system = 3
+            member.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(member, content, compress_type=zipfile.ZIP_DEFLATED)
     target = staging / f"protect-onvif-{name}.zip"
     write_atomic(target, release.getvalue())
     write_atomic(staging / f"{name}.json", metadata)
