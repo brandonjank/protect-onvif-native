@@ -61,9 +61,9 @@ hook runs as root to update the package-owned bundle. Check the installed bundle
 sudo python3 /opt/protect-onvif-native/protect_onvif.py status
 ```
 
-The installer recognizes the exact approved stock and patched hashes. For a console
-with a previous community patch, plan the initial migration from a verified stock
-bundle matching the installed package.
+The installer recognizes approved stock, this project's patch, and known outputs
+from the earlier 7.3.74 community patch. See [Migrate the community patch](#migrate-the-community-patch)
+if status shows `legacy patch`.
 
 Install the drop-in and reload systemd during a maintenance window.
 
@@ -84,6 +84,30 @@ To revert, remove the drop-in, reload the systemd configuration, and run
 checks the backup hash before restoring the stock bundle. Restart Protect during
 the maintenance window to load it. Console upgrades that reset `/opt` or systemd
 configuration may require reinstalling the project and drop-in.
+
+## Migrate the community patch
+
+Pause any existing job that runs the old `apply.sh` so this project can take over
+future starts. During a maintenance window, run the migration using the original
+stock backup from the old installer or the official package for this console.
+
+```sh
+sudo python3 /opt/protect-onvif-native/protect_onvif.py migrate --stock /path/to/service.js.bak-onvifmod
+# Or use the matching official Protect package
+sudo python3 /opt/protect-onvif-native/protect_onvif.py migrate --package /path/to/unifi-protect.deb
+```
+
+The command checks the installed legacy hash, verifies the matching stock source,
+builds and syntax-checks a fresh `service.js`, saves both bundles by hash, and
+replaces the installed bundle atomically. Protect's database, camera IDs, and
+recording files stay in place. Restart Protect to load the replacement, then check
+both lenses in live view and play back footage recorded after the restart.
+
+To return to the previous install, use `restore --legacy-sha256` with the hash
+printed during migration and restart Protect. The older helper files are still
+available to that bundle. An unrecognized custom build needs a verified stock
+baseline before using `apply`. Protect versions older than 7.3.74 need a Protect
+upgrade before installing this project.
 
 ## License and attribution
 

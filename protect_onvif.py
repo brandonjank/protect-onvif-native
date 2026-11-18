@@ -27,6 +27,18 @@ BACKUPS = Path("/var/lib/protect-onvif-native/stock")
 ARCHIVE_MEMBERS = ("control", "data")
 MANIFEST_KEYS = {"version", "architecture", "stock_sha256", "patched_sha256", "package_sha256"}
 DIGEST = re.compile(r"[a-f0-9]{64}")
+# Exact Linux outputs from the old 7.3.74 port (961997f) and the Axis fix
+# (db5da6b, also published as 7d5c4cb). Keyed by their stock bundle hash.
+LEGACY_BUNDLES = {
+    "1b54ec68f73bfd0ab6b4d81748b9051a52c70156e2128a59f251bfa3ed461dea": (
+        "2ad0ef4ba73560974840c002f642ca4d526153691fe30cf322e6d3571da27065",
+        "87049b1477abeda25245430a379318dfa3dc2a64f5d7cdf31cd6ce1d41ff384a",
+    ),
+    "5e843ae59c7ad921666364e693a288694ed5deb2077b06bc5508874c7484c9d0": (
+        "974dfbf9ac72a95fcf59a3dc0a37944ff63e8a6198c98a766ce6398ffbf92995",
+        "31fb8f929fc2a5d4e3d035bc13377c7acaa2175f1123547a5caf4e749acf14f4",
+    ),
+}
 RELEASE_FILES = (
     "LICENSE.md", "README.md", "adapter_7_3.py", "onvif_helper.html", "protect_onvif.py",
     "systemd/50-protect-onvif.conf", "systemd/protect-onvif-watch.service",
@@ -196,6 +208,25 @@ def installed_build():
     return version, arch
 
 
+def save_backup(directory, content, digest):
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    backup = directory / f"{digest}.js"
+    if not backup.exists():
+        write_atomic(backup, content)
+    if file_digest(backup) != digest:
+        raise PatchError(f"Backup failed its checksum: {backup}")
+    return backup
+
+
+def migration_source(args, version, arch):
+    if args.stock:
+        return args.stock.read_bytes()
+    package_version, package_arch, source = read_package(args.package)
+    if (package_version, package_arch) != (version, arch):
+        raise PatchError("The stock package version and architecture must match the installation")
+    return source
+
+
 def reconcile(args):
     if args.version:
         if not args.architecture:
@@ -210,41 +241,63 @@ def reconcile(args):
     matching = [
         item for _, item in approved_manifests(args.approved)
         if item["version"] == version and item["architecture"] == arch
-        and digest in (item["stock_sha256"], item["patched_sha256"])
+        and (digest in (item["stock_sha256"], item["patched_sha256"])
+             or digest in LEGACY_BUNDLES.get(item["stock_sha256"], ()))
     ]
     if not matching:
-        print(f"Protect {version} {arch} has no approved match for {digest}")
+        message = f"Protect {version} {arch} has no approved match for {digest}"
+        if args.command in ("migrate", "restore"):
+            raise PatchError(message)
+        print(message)
         return
     if len(matching) != 1:
         raise PatchError("Multiple approved manifests match the same installed bundle")
     manifest = matching[0]
+    stock_digest = manifest["stock_sha256"]
+    legacy_digests = LEGACY_BUNDLES.get(stock_digest, ())
+    is_legacy = digest in legacy_digests
     is_patched = digest == manifest["patched_sha256"]
-    print(f"Protect {version} {arch}: {'patched' if is_patched else 'approved stock'}")
-    if args.command == "status":
+    state = "patched" if is_patched else "legacy patch" if is_legacy else "approved stock"
+    print(f"Protect {version} {arch}: {state}")
+    if args.command == "status" or (args.command == "apply" and is_legacy):
         return
-    backup = args.backups / f"{manifest['stock_sha256']}.js"
+
     if args.command == "restore":
         if not is_patched:
             return
+        expected = args.legacy_sha256 or stock_digest
+        if args.legacy_sha256 and expected not in legacy_digests:
+            raise PatchError("The requested legacy hash does not match this Protect build")
+        backup = args.backups / f"{expected}.js"
         replacement = backup.read_bytes()
-        if sha256(replacement) != manifest["stock_sha256"]:
-            raise PatchError("Stock backup failed its checksum")
+        if sha256(replacement) != expected:
+            raise PatchError(f"Backup failed its checksum: {backup}")
+        action = "Restored legacy patch" if args.legacy_sha256 else "Restored stock"
     else:
         if is_patched:
             return
-        replacement = patch_bundle(current)
+        if args.command == "migrate":
+            if not is_legacy:
+                raise PatchError("Use apply for an approved stock bundle")
+            stock = migration_source(args, version, arch)
+            if sha256(stock) != stock_digest:
+                raise PatchError("The stock source does not match this legacy build")
+        else:
+            stock = current
+        replacement = patch_bundle(stock)
         if sha256(replacement) != manifest["patched_sha256"]:
             raise PatchError("Generated patch did not match the approved release")
         run_checks(args.node, replacement, test_modules=False)
-        args.backups.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if not backup.exists():
-            write_atomic(backup, current)
-        if file_digest(backup) != digest:
-            raise PatchError("Stock backup failed its checksum")
+        save_backup(args.backups, stock, stock_digest)
+        if is_legacy:
+            backup = save_backup(args.backups, current, digest)
+            print(f"Legacy backup saved at {backup}")
+            print(f"Legacy rollback option: restore --legacy-sha256 {digest}")
+        action = "Migrated the legacy patch" if is_legacy else "Applied approved patch"
     if file_digest(args.service) != digest:
         raise PatchError("The Protect bundle changed during preparation")
     write_atomic(args.service, replacement, reference=args.service)
-    print(f"{'Restored stock' if args.command == 'restore' else 'Applied approved patch'} for Protect {version}")
+    print(f"{action} for Protect {version}")
 
 
 def watch(staging, node):
@@ -279,7 +332,7 @@ def main():
             sub.add_argument("package", type=Path)
         sub.add_argument("--staging", type=Path, required=True)
         sub.add_argument("--node", default="node")
-    for command in ("status", "apply", "restore"):
+    for command in ("status", "apply", "migrate", "restore"):
         sub = commands.add_parser(command)
         sub.add_argument("--service", type=Path, default=SERVICE)
         sub.add_argument("--approved", type=Path, default=PROJECT / "approved")
@@ -287,6 +340,12 @@ def main():
         sub.add_argument("--version", help="Offline testing override for the installed package version")
         sub.add_argument("--architecture", help="Offline testing override for the package architecture")
         sub.add_argument("--node", default="/usr/bin/node24")
+        if command == "migrate":
+            source = sub.add_mutually_exclusive_group(required=True)
+            source.add_argument("--stock", type=Path, help="Pristine service.js from a legacy installer backup")
+            source.add_argument("--package", type=Path, help="Matching official Protect Debian package")
+        elif command == "restore":
+            sub.add_argument("--legacy-sha256", help="Restore a recognized legacy backup by its SHA-256")
     args = parser.parse_args()
     try:
         if args.command == "build":
