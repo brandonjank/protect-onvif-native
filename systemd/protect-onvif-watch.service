@@ -1,0 +1,8 @@
+[Unit]
+Description=Check the configured Protect repository for a patch candidate
+After=network-online.target
+
+[Service]
+Type=oneshot
+StateDirectory=protect-onvif-native
+ExecStart=/usr/bin/python3 /opt/protect-onvif-native/protect_onvif.py watch --node /usr/bin/node24 --staging /var/lib/protect-onvif-native/staged

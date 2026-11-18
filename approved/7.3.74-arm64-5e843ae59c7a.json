@@ -1,0 +1,7 @@
+{
+  "version": "7.3.74",
+  "architecture": "arm64",
+  "package_sha256": "590fa17f9f7d4eb14abea9c6f1a0ab29cd097af83c005889289c8c97be371522",
+  "stock_sha256": "5e843ae59c7ad921666364e693a288694ed5deb2077b06bc5508874c7484c9d0",
+  "patched_sha256": "efc98545e2306dabe36769612e9a63950dc08c2dd5fb12ee40167298fcdebe5d"
+}
